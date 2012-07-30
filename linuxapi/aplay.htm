@@ -1,0 +1,354 @@
+<HTML><HEAD><TITLE>ALSA digital audio playback</TITLE></HEAD><BODY BGCOLOR=FFFFFF TEXT=000000 LINK=BLUE VLINK=PURPLE ALINK=PURPLE>
+
+<P>In order to play waveform data, you need to first call <B>snd_pcm_open</B>() once, passing it the hardware name of the desired card/device/sub-device. snd_pcm_open will return a handle you can use to call other ALSA functions to output waveform data to that device.
+
+<P>After you're done outputting to the device (and have no further use for it), you must close that device with <B>snd_pcm_close</B>().
+
+<P>There are several different ways to output waveform data. Only two of them make much sense, so we will examine only those two methods. In the first method, you output waveform data by calling <B>snd_pcm_writei</B>() or <B>snd_pcm_writen</B>(). These functions copy waveform data from some buffer you supply (containing your waveform data) to the sound card's hardware buffer (ie, feeding its Digital-To-Analog converter).
+
+<P>In a second, alternate method, the card's hardware buffer is logically divided into equal-sized "blocks". You ask ALSA to give you a pointer to the block where the DAC is next going to play waveform data. Then, you directly copy your waveform data to that block of the hardware buffer, hopefully before the DAC actually starts accessing that block. The advantage of this method (over the preceding method) is that, if you happen to be mixing down several waveforms into one buffer, you can do that mixdown right into the hardware buffer, and therefore don't need to allocate a second "mixdown buffer", and the driver doesn't do any extra copying of data. So too, if you happen to be streaming data from disk, then you can load the waveform data directly into the hardware buffer. So, this second method can be more efficient for an program that does a realtime mixdown of multiple waveforms, or disk streaming. But it's more complicated to code than the first method.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>List digital audio outputs</B></FONT></P>
+
+<P>One of the first things you'll want to do is get a listing of digital audio (ie, waveform playback) outputs. ALSA has some functions to do that. Unlike with Microsoft Windows API, you can't just quickly enumerate only waveform play devices. No, that would be too easy, and Linux developers like to make things difficult. What you have to do is enumerate through <U>every</U> sound card on the system, whether or not it even has any waveform capabilities at all, and query to find out if a given card has any wave output devices on it. Sigh.
+
+<P>So, we're going to need to do the same thing we did in the program cardnames.c (ie, go through every card in the system), but we'll add code to our loop to query each card for its wave output devices.
+
+<P>Just like we enumerated cards by calling <B>snd_card_next</B>() in a loop, we can enumerate the waveform devices (input and output) on a given card by calling <B>snd_ctl_pcm_next_device</B>() in another (inner) loop. You pass snd_ctl_pcm_next_device the handle to the card's control interface (which as you'll recall from cardnames.c, we got by calling snd_ctl_open). You also pass a pointer to an int. Before calling snd_ctl_pcm_next_device the first time, you initialize your int to -1. snd_ctl_pcm_next_device will then change the value of your int to be the number of the first waveform device on that card (perhaps 0). The next time you call snd_ctl_pcm_next_device, if your int's value is 0, then ALSA sets your int to the next waveform device number after 0. Etc. If there is not another waveform device upon that card, then ALSA sets your int to -1. Here is a simple program (called countwave.c) to count how many waveform devices are on each sound card ALSA has found in your computer:
+
+<PRE><FONT COLOR=#A0A0A0>// countwave.c
+// Counts the number of waveform devices upon each ALSA sound card in the system.
+//
+// Compile as:
+// gcc -o countwave countwave.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=BLUE>snd_ctl_t</FONT> *cardHandle;
+
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Open this card's control interface. We specify only the card number -- not
+      // any device nor sub-device too</FONT>
+      {
+      <FONT COLOR=BLUE>char</FONT>   str[64];
+
+      <FONT COLOR=PURPLE>sprintf</FONT>(str, <FONT COLOR=RED>"hw:%i"</FONT>, cardNum);
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_open</FONT>(&cardHandle, str, 0)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>continue</FONT>;
+      }
+      }
+
+      {
+      <FONT COLOR=BLUE>int</FONT>      devNum, totalDevices;
+
+      <FONT COLOR=#A0A0A0>// No waveform devices found yet</FONT>
+      totalDevices = 0;
+
+      <FONT COLOR=#A0A0A0>// Start with the first wave device on this card</FONT>
+      devNum = -1;
+		
+      <FONT COLOR=BLUE>for</FONT> (;;)
+      {
+         <FONT COLOR=#A0A0A0>// Get the number of the next wave device on this card</FONT>
+         <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_pcm_next_device</FONT>(cardHandle, &devNum)) < 0)
+         {
+            <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get next wave device number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+            <FONT COLOR=BLUE>break</FONT>;
+         }
+
+         <FONT COLOR=#A0A0A0>// No more wave devices on this card? ALSA sets "devNum" to -1 if so.
+         // NOTE: It's possible that this sound card may have no wave devices on it
+         // at all, for example if it's only a MIDI card</FONT>
+         <FONT COLOR=BLUE>if</FONT> (devNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+         <FONT COLOR=#A0A0A0>// Another wave device found on this card, so bump the count</FONT>
+         ++totalDevices;
+      }
+
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Found %i digital audio devices on card %i\n"</FONT>, totalDevices, cardNum);
+      }
+
+      <FONT COLOR=#A0A0A0>// Close the card's control interface after we're done with it</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_close</FONT>(cardHandle);
+   }
+
+   <FONT COLOR=#A0A0A0>// ALSA allocates some mem to load its config file when we call some of the
+   // above functions. Now that we're done getting the info, let's tell ALSA
+   // to unload the info and free up that mem</FONT>
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<P>But a card's wave device may have numerous sub-devices on it, which is often the case with cards that have multiple audio outputs/inputs (ie, surround sound outputs, separate line/microphone/aux inputs).
+
+<P>To enumerate the wave output sub-devices on a card, we must call <B>snd_ctl_pcm_info</B>(). snd_ctl_pcm_info wants us to pass the handle to the card's control interface. We also have to pass a <B>snd_pcm_info_t</B> struct. Once again, ALSA won't let us declare one of these. No, we have to call <B>snd_pcm_info_alloca</B>() to allocate one (from the stack). But, before we pass it to snd_ctl_pcm_info, we have to initialize this struct. We have to set the "device" field to the wave device number we want to fetch information about (where 0 will be the first wave device, 1 is the second wave device, etc). We must also set the "subdevice" field with the subdevice number (where -1 will fetch the first subdevice on that wave device). We also must set the "stream" field to SND_PCM_STREAM_PLAYBACK if we want only the wave output sub-devices, or SND_PCM_STREAM_CAPTURE if we want only the wave input sub-devices. (Obviously, we'll set stream to SND_PCM_STREAM_PLAYBACK here, since we're looking to output waveform data).
+
+<P>But can we directly set the snd_pcm_info_t's device, subdevice, and stream fields? Oh hell no. That would be too easy. No, this is Linux, folks. We have to call snd_pcm_info_set_device to set the device field, snd_pcm_info_set_subdevice to set the subdevice field, and snd_pcm_info_set_stream to set the stream field.
+
+<P>snd_ctl_pcm_info() will then fill in the rest of our snd_pcm_info_t struct with information about one wave subdevice upon the device. So, then we can easily pull that info out of the snd_pcm_info_t? Well, not really. Remember that ALSA won't let us directly access the fields of the snd_pcm_info_t. So for example, if we want to examine the subdevices_count field to see how many wave subdevices there are on this particular wave device, we have to call <B>snd_pcm_info_get_subdevices_count</B>().
+
+<P><A NAME="ENUM">Here</A> is a program to list the hardware names of all the wave output devices/sub-devices on all the sound cards. Notice we added one more inner loop to enumerate wave out sub-devices.
+
+<PRE><FONT COLOR=#A0A0A0>// listpcm.c
+// Lists the hardware names of wave output device/sub-devices
+// upon each ALSA sound card in the system.
+//
+// Compile as:
+// gcc -o listpcm listpcm.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=BLUE>snd_ctl_t</FONT> *cardHandle;
+
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Open this card's control interface. We specify only the card number -- not
+      // any device nor sub-device too</FONT>
+      {
+      <FONT COLOR=BLUE>char</FONT>   str[64];
+
+      <FONT COLOR=PURPLE>sprintf</FONT>(str, <FONT COLOR=RED>"hw:%i"</FONT>, cardNum);
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_open</FONT>(&cardHandle, str, 0)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>continue</FONT>;
+      }
+      }
+
+      {
+      <FONT COLOR=BLUE>int</FONT>      devNum;
+
+      <FONT COLOR=#A0A0A0>// Start with the first wave device on this card</FONT>
+      devNum = -1;
+		
+      <FONT COLOR=BLUE>for</FONT> (;;)
+      {
+         <FONT COLOR=BLUE>snd_pcm_info_t</FONT>  *pcmInfo;
+         <FONT COLOR=BLUE>register int</FONT>        subDevCount, i;
+
+         <FONT COLOR=#A0A0A0>// Get the number of the next wave device on this card</FONT>
+         <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_pcm_next_device</FONT>(cardHandle, &devNum)) < 0)
+         {
+            <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get next wave device number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+            <FONT COLOR=BLUE>break</FONT>;
+         }
+
+         <FONT COLOR=#A0A0A0>// No more wave devices on this card? ALSA sets "devNum" to -1 if so.
+         // NOTE: It's possible that this sound card may have no wave devices on it
+         // at all, for example if it's only a MIDI card</FONT>
+         <FONT COLOR=BLUE>if</FONT> (devNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+         <FONT COLOR=#A0A0A0>// To get some info about the subdevices of this wave device (on the card), we need a
+         // snd_pcm_info_t, so let's allocate one on the stack</FONT>
+         <FONT COLOR=PURPLE>snd_pcm_info_alloca</FONT>(&pcmInfo);
+         <FONT COLOR=PURPLE>memset</FONT>(pcmInfo, 0, <FONT COLOR=PURPLE>snd_pcm_info_sizeof</FONT>());
+
+         <FONT COLOR=#A0A0A0>// Tell ALSA which device (number) we want info about</FONT>
+         <FONT COLOR=PURPLE>snd_pcm_info_set_device</FONT>(pcmInfo, devNum);
+
+         <FONT COLOR=#A0A0A0>// Get info on the wave outs of this device</FONT>
+         <FONT COLOR=PURPLE>snd_pcm_info_set_stream</FONT>(pcmInfo, SND_PCM_STREAM_PLAYBACK);
+
+         i = -1;
+         subDevCount = 1;
+
+         <FONT COLOR=#A0A0A0>// More subdevices?</FONT>
+         <FONT COLOR=BLUE>while</FONT> (++i < subDevCount)
+         {
+            <FONT COLOR=#A0A0A0>// Tell ALSA to fill in our snd_pcm_info_t with info on this subdevice</FONT>
+            <FONT COLOR=PURPLE>snd_pcm_info_set_subdevice</FONT>(pcmInfo, i);
+            <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_pcm_info</FONT>(cardHandle, pcmInfo)) < 0)
+            {
+               <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get info for wave output subdevice hw:%i,%i,%i: %s\n"</FONT>, cardNum, devNum, i, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+               <FONT COLOR=BLUE>continue</FONT>;
+            }
+
+            <FONT COLOR=#A0A0A0>// Print out how many subdevices (once only)</FONT>
+            <FONT COLOR=BLUE>if</FONT> (!i)
+            {
+               subDevCount = <FONT COLOR=PURPLE>snd_pcm_info_get_subdevices_count</FONT>(pcmInfo);
+               <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"\nFound %i wave output subdevices on card %i\n"</FONT>, subDevCount, cardNum);
+            }
+
+            <FONT COLOR=#A0A0A0>// NOTE: If there's only one subdevice, then the subdevice number is immaterial,
+            // and can be omitted when you specify the hardware name</FONT>
+            <FONT COLOR=PURPLE>printf</FONT>((subDevCount > 1 ? <FONT COLOR=RED>"    hw:%i,%i,%i\n"</FONT> : <FONT COLOR=RED>"    hw:%i,%i\n"</FONT>), cardNum, devNum, i);
+         }
+      }
+      }
+
+      <FONT COLOR=#A0A0A0>// Close the card's control interface after we're done with it</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_close</FONT>(cardHandle);
+   }
+
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Open an output</B></FONT></P>
+
+<P>Once you've discovered the hardware name of some wave output, you can pass this name to <B>snd_pcm_open</B>() (as the second arg) to open this wave output. You must also pass a handle to where you want ALSA to return the device handle. You pass this as the first arg. To open a device for digital audio output, you must pass the value SND_PCM_STREAM_PLAYBACK for the third arg. snd_pcm_open will return a negative number if the device fails to open.
+
+<P>For example, assuming that "hw:0,0" is the hardware name of a wave output, here's how we open it and get its handle in our variable <I>pcmOutHandle</I>:
+
+<PRE><FONT COLOR=BLUE>snd_pcm_t</FONT>    *pcmOutHandle;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=#A0A0A0>// Open output wave device hw:0,0</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_open</FONT>(&pcmOutHandle, <FONT COLOR=RED>"hw:0,0"</FONT>, SND_PCM_STREAM_PLAYBACK, 0)) < 0)
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open wave output: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>The plug interface (ie, sample interpolation)</B></FONT></P>
+
+<P>When you use a <I>device name</I> such as "hw:0,0", you directly open the sound card itself, and your calls to ALSA go directly to the card. But some cards do not support all possible features of the ALSA API. For example, the ALSA API lets you play back 16-bit waveform data at a sample rate of 44100 hertz. But perhaps a particular sound card supports only 8-bit playback, or supports only a 22050Hz sample rate. If that's the case, then when you try to call ALSA functions to playback your 16-bit, 44100Hz waveform upon that sound card, the ALSA functions will return an error number, and you'll get no sound.
+
+<P>But, ALSA offers an optional, built-in software layer that "reformats" your data into the closest approximation the sound card does support. For example, when you pass some 16-bit, 44100Hz waveform to the above card, ALSA will reformat your data to 8-bit, 22050Hz data. And then the ALSA functions will succeed, and you'll hear sound (albeit at a degraded quality since 8-bit 22050Hz doesn't sound as good as 16-bit 44100Hz). If you wish to take advantage of this ALSA software layer, then prepend "plug" to your device name. For example, perhaps you'll pass "plughw:0,0" (instead of "hw:0,0") to snd_pcm_open.
+
+<P>The big disadvantage of this software layer is that, if ALSA <U>does</U> have to reformat your data (due to a sound card limitation), it adds some overhead (during playback), and thus may use more CPU time or increase underrun errors. Furthermore, this reformatting is done in real-time, so the algorithm isn't as fancy as some add-on library that doesn't do "waveform interpolation" in real-time (ie, libresample or libsamplerate). You may hear poorer quality playback with ALSA's waveform reformatting, than you would with a library that has fancier algorithms to minimize anti-aliasing. Also, if you're going to be loading/creating some waveform data into a RAM buffer, and repeatedly playback from that buffer, it would make more sense to reformat the data once only, with an add-on library specially written to do accurate interpolation, rather than have ALSA perform the same reformatting every time you play the data, using an inferior algorithm. In that case, you may wish to call some ALSA functions (after you open the sound card directly) to query what rates/resolution the card supports, and do the data interpolation yourself, prior to any playback. Then, you won't need to rely upon ALSA's plug interface. But for non-critical audio use, ALSA's plug interface is convenient and works.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Close an output</B></FONT></P>
+
+<P>When you're finally done with an output (ie, no longer need to output any waveform data to it), you pass the handle (you got from snd_pcm_open) to <B>snd_pcm_close</B>(). You need do this only once.
+
+<PRE><FONT COLOR=PURPLE>snd_pcm_close</FONT>(pcmOutHandle);</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Set hardware parameters</B></FONT></P>
+
+<P>Before you can actually play waveform data, you first need to tell the card something about what hardware parameters you desire. For example, most cards offer 8-bit or 16-bit playback. Some offer 24-bit, etc. Most cards offer a choice of at least 3 sample rates, 8Khz, 22Khz, and 44.1Khz. So, you need to tell the card what bit resolution, and sample rate, you desire. There are other hardware parameters that you can adjust as well, for example most cards support either mono (1 channel) or stereo (2 channel), or even surround sound (5, 6, or 7 channels). So you have to tell the card how many channels you want it to playback simultaneously.
+
+<P>To set the hardware parameters, you need a <B>snd_pcm_sw_params_t</B> struct. Sure enough, you have to ask ALSA to allocate one of these for you, by calling <B>snd_pcm_sw_params_malloc</B>(). Then, you need to fill in all the fields of this struct with the values you wish. For example, there is a "bit resolution" field you could set to 16, if you want 16-bit playback. And there's a "sample rate" field you could set to 44100 if you want that sample rate. So you just directly set those fields, right? Wrong! This is ALSA. Everything is abstracted to ridiculous degrees. For each field you want to set, there's a separate function you must call to set that one field. And you pass the desired value. For example, to set the sample rate field, you have to call <B>snd_pcm_hw_params_set_rate</B>(), passing your desired sample rate (ie, 44100 perhaps).
+
+<P>For some of the snd_pcm_sw_params_t fields, you'll probably want to leave the card's default parameters. You can initialize the snd_pcm_sw_params_t to those defaults parameters by first passing it to <B>snd_pcm_hw_params_any</B>(). snd_pcm_hw_params_any fills in all of the snd_pcm_sw_params_t fields to their defaults. Then, you can subsequently change only those fields you desire to be set to something other than the default.
+
+<P>What if you want to know what the default sample rate is? After you call snd_pcm_hw_params_any, you just read what's in the sample rate field, right? Yes and no. Yes, you read what's in the sample rate field, but you can't directly access it. You have to call the ALSA function <B>snd_pcm_hw_params_get_rate</B>(), and it returns what's in the sample rate field. (Is this abstraction a pain in the ass, or what?).
+
+<P>Finally, after you set all the snd_pcm_sw_params_t fields as you want them, you have to give all those new values back to the sound card. You do this by passing your snd_pcm_sw_params_t to <B>snd_pcm_hw_params</B>(). At that point, the sound card is now setup with your desired bit resolution, sample rate, channels, etc.
+
+<P>And finally, after you've called snd_pcm_hw_params, you must free that snd_pcm_sw_params_t struct by passing it to <B>snd_pcm_hw_params_free</B>(). (Or, you could hold onto it if you plan to subsequently change some field, and then pass it to snd_pcm_hw_params again. You can reuse that one struct over and over to change hardware parameters. But at some point before your program ends, you must free it).
+
+<P>Here is a function, that sets the card for stereo, 44.1Khz, 16-bit playback. <I>pcmOutHandle</I> contains the handle returned by snd_pcm_open.
+
+<PRE><FONT COLOR=BLUE>int</FONT> set_audio_hardware(<FONT COLOR=BLUE>void</FONT>)
+{
+   <FONT COLOR=BLUE>register int</FONT>        err;
+   <FONT COLOR=BLUE>snd_pcm_hw_params_t</FONT> *hw_params;
+
+   <FONT COLOR=#A0A0A0>// We need to get an ALSA "sound hardware struct" in order to change any of
+   // the hardware parameters of the sound card. We must ask ALSA to allocate
+   // this struct for us. We can't declare one of them on our own. ALSA doesn't
+   // allow us to know anything about what fields are inside one of these structs,
+   // nor even what the sizeof the struct is. So the only way to get one of these
+   // structs is to call this ALSA function to allocate one</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params_malloc</FONT>(&hw_params)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get sound hardware struct %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+bad1: <FONT COLOR=BLUE>return</FONT>(err);
+   }
+
+   <FONT COLOR=#A0A0A0>// Fill in the sound hardware struct with the current hardware parameters for
+   // the audio card. We'll going to alter a few fields, but leave the rest of
+   // the fields at their current values. So, we need to fill in all of the fields
+   // to their current values. Calling this ALSA function does that</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params_any</FONT>(pcmOutHandle, hw_params)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't init sound hardware struct: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+bad2: <FONT COLOR=PURPLE>snd_pcm_hw_params_free</FONT>(hw_params);
+      <FONT COLOR=BLUE>goto</FONT> bad1;
+   }
+
+   <FONT COLOR=#A0A0A0>// We want to set the hardware struct's "bit resolution" field to SND_PCM_FORMAT_S16_LE (16-bit)</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params_set_format</FONT>(pcmOutHandle, hw_params, SND_PCM_FORMAT_S16_LE)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't set 16-bit: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+      <FONT COLOR=BLUE>goto</FONT> bad2;
+   }
+
+   <FONT COLOR=#A0A0A0>// We want to set the hardware struct's "rate"field to 44100</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params_set_rate</FONT>(pcmOutHandle, hw_params, 44100, 0)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't set sample rate: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+      <FONT COLOR=BLUE>goto</FONT> bad2;
+   }
+
+   <FONT COLOR=#A0A0A0>// We want stereo playback, so we want to set the hardware struct's "channels"
+   // field to 2</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params_set_channels</FONT>(pcmOutHandle, hw_params, 2)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't set stereo: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+      <FONT COLOR=BLUE>goto</FONT> bad2;
+   }
+
+   <FONT COLOR=#A0A0A0>// Ok, we've changed the fields of the hardware struct. Now we need to tell ALSA
+   // to give all of these updated hardware parameters back to the audio card, so that
+   // the audio card can update its own parameters to what we requested. The following
+   // ALSA function does this. NOTE: If the hardware doesn't support the parameters we
+   // requested (for example, can't do 44100 rate), then we'll get an error. If we
+   // instead use the ALSA "plughw" device (instead of "hw"), then ALSA will do
+   // some realtime "translating" of our data to accomodate the sound card's limits,
+   // such as maybe downsampling/upsampling to whatever nearest rate the sound card
+   // supports. The downside of this is that it introduces extra overhead during
+   // playback which can result in underrun errors, anti-aliasing errors being heard
+   // in the data, etc</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_pcm_hw_params</FONT>(pcmOutHandle, hw_params)) < 0)
+   {
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't set hardware params: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+      <FONT COLOR=BLUE>goto</FONT> bad2;
+   }
+
+   <FONT COLOR=#A0A0A0>// Now that we're set the hardware parameters, we don't need the hardware
+   // struct any more. We tell ALSA to free it with the following call</FONT>
+   <FONT COLOR=PURPLE>snd_pcm_hw_params_free</FONT>(hw_params);
+
+   <FONT COLOR=#A0A0A0>// Success</FONT>
+   <FONT COLOR=BLUE>return</FONT>(0);
+}</PRE>
+
+<P><FONT COLOR=RED>Note:</FONT> ALSA provides a convenience function called <B>snd_pcm_set_params</B>() which lets you set many of the hardware settings directly, without needing a snd_pcm_hw_params_t struct. This is much easier than the above code. But, snd_pcm_set_params doesn't support <U>all</U> the possible hardware settings you can change. It supports only those settings most programs (not using memory-mapped output mode, discussed later) would typically change.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Set software parameters</B></FONT></P>
+
+
+</BODY></HTML>

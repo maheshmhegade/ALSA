@@ -1,0 +1,131 @@
+<HTML><HEAD><TITLE>ALSA rawmidi recording</TITLE></HEAD><BODY BGCOLOR=FFFFFF TEXT=000000 LINK=BLUE VLINK=PURPLE ALINK=PURPLE>
+
+ALSA's rawmidi API deals only with inputting MIDI bytes. It does no time-stamping of incoming data, nor routing of data between applications.
+
+<P>In order to read MIDI data, you need to first call <B>snd_rawmidi_open</B>() once, passing it the hardware name of the desired card/device/sub-device. snd_rawmidi_open will return a handle you can use to call <B>snd_rawmidi_read</B>() which returns any MIDI data which has already been received by that device (and stored in the driver's internal input buffer).
+
+<P>After you're done inputting from the device (and have no further use for it), you must close that device with <B>snd_rawmidi_close</B>().
+
+<P>Think of a MIDI device like a file. You open it, you read from it, and then you close it.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>List rawmidi inputs</B></FONT></P>
+
+<P>One of the first things you'll want to do is get a listing of rawmidi inputs. ALSA has some functions to do that. In fact, the way to enumerate MIDI outputs is almost the same as <A HREF="arawmidplay.htm#ENUM">enumerating MIDI outputs</A>, except that instead of passing SND_RAWMIDI_STREAM_OUTPUT to <B>snd_rawmidi_info_set_stream</B>, we pass SND_RAWMIDI_STREAM_INPUT.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Open an input</B></FONT></P>
+
+<P>Once you've discovered the hardware name of some MIDI input, you can pass this name to <B>snd_rawmidi_open</B>() (as the third arg) to open this MIDI input. You must also pass a handle to where you want ALSA to return the device handle. You pass this as the <U>first</U> arg (ie, not the second arg, as you would do to open a MIDI output).
+
+<P>For example, assuming that "hw:0,0,0" is the hardware name of a MIDI input, here's how we open it and get its handle in our variable <I>midiInHandle</I>:
+
+<PRE><FONT COLOR=BLUE>snd_rawmidi_t</FONT> *midiInHandle;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=#A0A0A0>// Open input MIDI device hw:0,0,0</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_open</FONT>(&midiInHandle, 0, <FONT COLOR=RED>"hw:0,0,0"</FONT>, 0)) < 0)
+{
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open MIDI input: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+}</PRE>
+
+<P><FONT COLOR=RED>Note:</FONT> If a particular hardware name is both a MIDI input, as well as a MIDI output, you can simultaneously open both the input and output with a single call to snd_rawmidi_open. You must pass two handles; one for the input and one for the output. For example, here we open hw:0,0,0 for both MIDI input and output:
+
+<PRE><FONT COLOR=BLUE>snd_rawmidi_t</FONT> *midiInHandle;
+<FONT COLOR=BLUE>snd_rawmidi_t</FONT> *midiOutHandle;
+
+<FONT COLOR=PURPLE>snd_rawmidi_open</FONT>(&midiInHandle, &midiOutHandle, <FONT COLOR=RED>"hw:0,0,0"</FONT>, 0);
+</PRE>
+
+<P>Later, you must close each handle separately via snd_rawmidi_close. (ie, You'll call snd_rawmidi_close twice, once passing midiInHandle, and the second time passing midiOutHandle).
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Input midi bytes</B></FONT></P>
+
+<P>After opening a MIDI output, you can send bytes to it by calling <B>snd_rawmidi_read</B>(). You pass the handle you got from snd_rawmidi_open, the address of a buffer where you want the received MIDI bytes stored, and a count of how many bytes maximum you want placed into the buffer. snd_rawmidi_read will return a count of how many bytes were actually read, or a negative number if an error. For example, here we ask for the next (ie, one) received MIDI byte:
+
+<PRE><FONT COLOR=BLUE>unsigned char</FONT> buffer;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_read</FONT>(midiInHandle, &buffer, 1)) < 0)
+{
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't read MIDI input: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+}
+</PRE>
+
+<P><FONT COLOR=RED>Note:</FONT> snd_rawmidi_read does not resolve running status, so you should be prepared to deal with running status. (ie, Not every MIDI message may have a status byte).
+
+<P>The driver stores incoming MIDI bytes in its own internal driver, waiting for you to call snd_midi_read to retrieve them. If you don't retrieve bytes fast enough such that the driver's internal buffer fills up even as more MIDI bytes are arriving at MIDI In, then the driver will get an overflow condition. In that case, the driver may discard incoming MIDI bytes. If you encounter such a situation, you may want to redesign your software so that it retrieves bytes more quickly. Or, you can resize the driver's input buffer to make it large enough to avoid overflowing. You do the latter with a call to <B>snd_rawmidi_params_set_buffer_size</B>() (as shown in <A HREF="arawmidplay.htm#RESIZE">resizing the buffer</A>, except of course you pass the handle to your MIDI input device).
+
+<P>To determine if an overflow condition has happened, you can call <B>snd_rawmidi_status_get_xruns</B>. This will return 0 if there are no overflows.
+
+<PRE><FONT COLOR=BLUE>snd_rawmidi_status_t</FONT> *ptr;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=#A0A0A0>// We need to get a snd_rawmidi_status_t struct</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_status_malloc</FONT>(&ptr)) < 0)
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get snd_rawmidi_status_t: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+<FONT COLOR=BLUE>else</FONT>
+{
+   <FONT COLOR=#A0A0A0>// Tell ALSA to fill in our snd_rawmidi_status_t struct with this device's status</FONT>
+   <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_status</FONT>(midiInHandle, ptr)) < 0)
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get status: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+   <FONT COLOR=BLUE>else</FONT>
+   {
+      err = <FONT COLOR=PURPLE>snd_rawmidi_status_get_xruns</FONT>(ptr);
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"There are %i errors\n"</FONT>, err);
+   }
+
+   <FONT COLOR=#A0A0A0>// Free the snd_rawmidi_status_t struct when done</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_status_free</FONT>(ptr);
+}
+</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Close an input</B></FONT></P>
+
+<P>When you're finally done with an input (ie, no longer need to input any MIDI bytes from it), you pass the handle (you got from snd_rawmidi_open) to <B>snd_rawmidi_close</B>(). You need do this only once.
+
+<PRE><FONT COLOR=PURPLE>snd_rawmidi_close</FONT>(midiInHandle);</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Blocking and non-blocking modes</B></FONT></P>
+
+<P>Normally, a MIDI input is opened in blocking mode. What this means is that, when you call snd_rawmidi_read(), then snd_rawmidi_read will not return until all of the bytes you requested are available. So, if you tell snd_rawmidi_read to return 10 bytes, then snd_rawmidi_read will not return until 10 MIDI bytes have arrived at MIDI In, and are copied to your buffer:
+
+<PRE><FONT COLOR=BLUE>unsigned char</FONT> buffer[10];
+<FONT COLOR=BLUE>register int</FONT> err;
+
+err = <FONT COLOR=PURPLE>snd_rawmidi_read</FONT>(midiInHandle, &buffer[0], 10);
+<FONT COLOR=#A0A0A0>// In blocking mode, we don't get here until buffer[] contains 10 MIDI bytes</FONT>
+</PRE>
+
+<P>But given that MIDI is a slow transmission protocol, it can take a long time to input some MIDI bytes. You can instead use non-blocking mode which means that snd_rawmidi_read quickly copies whatever bytes are in the driver's internal buffer (upto how many you requested), and then returns immediately. So in the above example, this means that snd_rawmidi_read may return a count less than 10 (or even 0 if there are no more MIDI bytes waiting to be read, or a negative number if there's an error).
+
+<P>To enable non-blocking mode, you can call <B>snd_rawmidi_nonblock</B> after you open the MIDI input. You pass the handle (you got from snd_rawmidi_open), and a 1 to enable non-blocking (or a 0 to disable it). 
+
+<PRE><FONT COLOR=#A0A0A0>// Enable non-blocking mode</FONT>
+<FONT COLOR=PURPLE>snd_rawmidi_nonblock</FONT>(midiInHandle, 1);</PRE>
+
+<P>Alternately, you can enable non-blocking right when you open the MIDI input, by passing SND_RAWMIDI_NONBLOCK as the fourth arg to snd_rawmidi_open().
+
+<P><FONT COLOR=RED>Note:</FONT> Normally, if some other app is using the particular MIDI input you want, then snd_rawmidi_open will not return until the other app closes that MIDI input. So, your app may be "stuck" in that call to snd_rawmidi_open for a long time. But when you specify SND_RAWMIDI_NONBLOCK, then snd_rawmidi_open will return immediately with an error code of -EBUSY if some other app is using the MIDI input. So, SND_RAWMIDI_NONBLOCK can be useful if you don't want to be stuck in snd_rawmidi_open when the MIDI input is not available for your use. You can always call snd_rawmidi_nonblock to turn off non-blocking mode, after you open the output, if you don't desire blocking mode for snd_rawmidi_read.
+
+<PRE><FONT COLOR=#A0A0A0>// Open input MIDI device hw:0,0,0 in non-blocking mode</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_open</FONT>(&midiInHandle, 0, <FONT COLOR=RED>"hw:0,0,0"</FONT>, SND_RAWMIDI_NONBLOCK)) < 0)
+{
+   <FONT COLOR=#A0A0A0>// Is someone else using this MIDI input?</FONT>
+   <FONT COLOR=BLUE>if</FONT> (err == -EBUSY)
+   {
+      <FONT COLOR=#A0A0A0>// Here you may wish to try opening a different MIDI input</FONT>
+   }
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open MIDI input: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+}
+<FONT COLOR=#A0A0A0>// Here you may wish to turn off non-blocking mode</FONT>
+<FONT COLOR=BLUE>else</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_nonblock</FONT>(midiInHandle, 0);
+</PRE>
+
+<P>Since snd_rawmidi_read does not wait in non-blocking mode, but rather will return 0 if there are no MIDI bytes to return to you, you can eat up CPU cycles if you simply loop around a call to snd_rawmidi_read. At the very least, you should sleep for a millisecond before each call to snd_rawmidi_read, to give time for another byte to arrive.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Examples</B></FONT></P>
+
+<P>The directory <B>rawmidi</B> contains some rawmidi examples. The subdirectory <B>listrawmidi</B> contains a program that lists all of the MIDI input and output devices/sub-devices on the system. It also display more detailed information about each device/sub-device.
+
+<P>The subdirectory <B>rawmidiinput</B> contains a program that displays incoming MIDI bytes. You can supply the hardware name of the MIDI input to use, or let the program use the first MIDI input it finds.
+</BODY></HTML>

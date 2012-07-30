@@ -1,0 +1,266 @@
+<HTML><HEAD><TITLE>Linux Audio Programming in C/C++</TITLE></HEAD><BODY BGCOLOR=FFFFFF TEXT=000000 LINK=BLUE VLINK=PURPLE ALINK=PURPLE>
+
+In Linux, a program does not directly read and write hardware ports on a sound card. Instead, a program calls functions in the Linux operating system, which do the actual hardware reading and writing for you (in conjunction with the sound card's device driver). For writing data to the card, you pass that data to an operating system function that sends that data to the card's device driver, which in turn writes that data to the card. For reading data from the card, you call an operating system function that causes the driver to read some data from the card (into some internal buffer in the driver), and then you call another operating system function to copy that data into a buffer whose address you've specified. In this way, you'll create a program that will work with a wide range of sound cards and MIDI interfaces. It's the driver that has the hardware specific code in it, not your program. The drivers for various hardware all look the same to the program and operating system. (ie, Every driver has the same set of functions in it, which are called by the operating system using one "standard" method for all. Therefore, your program automatically supports all such drivers and their hardware by virtue of calling Linux operating system functions).
+
+<P>So, is there a "standard" that all Linux audio/MIDI drivers are written to follow (ie, such that each driver has the same set of functions, to be called using the same method)? Yes, and no. As is typical with Linux, there are several needlessly different ways of doing the same thing. But most of those ways have been deprecated in favor of the two, primary standards called ALSA and JACK. ALSA implements both MIDI, and digital audio (ie, waveform), support. JACK is for audio support only. ALSA is the lowest level sound API, and comes as part of any modern Linux distro. JACK runs on top of ALSA (although it can also run on top of some of those other, deprecated standards), and is typically an extra package that you must add to your system.
+
+<P>So, we're going to start off learning ALSA, and then look at JACK later.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA introduction</B></FONT></P>
+
+<P>Any hardware that has MIDI and/or digital audio capabilities, whether it be an actual card, or some chip on a motherboard, is considered to be a "sound card" by ALSA. So wherever you see "card", that means either a sound card or a sound chip. Also note that a sound card need not support both MIDI and digital audio. It may support only one of the two. As long as it supports either MIDI and/or digital audio, ALSA considers it a "sound card".
+
+<P>You should ensure that your sound card has an ALSA driver. You can check the <A HREF="http://www.alsa-project.org">ALSA web site</A> to peruse a list of supported sound chips/cards.
+
+<P>Linux C/C++ programs that call ALSA's MIDI and digital audio functions should include the header <I>alsa/asoundlib.h</I>, and also be linked with the library <I>asound</I>. To make sure you have this include file, and linker library, on your system, you'll likely need to install the ALSA development package. Run your package manager (such as Synaptic), and search for "alsa dev" to find that development package and install it. For example, doing this search with Ubuntu's Synaptic, reveals a package named <B>libasound2-dev</B> containing the needed development files.
+
+<P>Because ALSA supports both audio (ie, digital waveform), as well as MIDI, playback and recording, we'll take a look at each aspect individually. (ie, We'll examine MIDI playback, and then MIDI recording, and then digital audio playback, and finally, digital audio recording). In fact, ALSA offers several different ways to do some of the same things, for example, two different ways to do MIDI. Where those different ways offer something notable, we'll study each method separately. But for some methods that offer differences that yield no notable advantage, we'll just ignore those methods (and wish that the ALSA programmers had exercised a little restraint and more brevity in their design).
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA cards and their devices/sub-devices</B></FONT></P>
+
+<P>In any computer, there can be more than one installed card capable of inputting or outputting MIDI data. For example, a musician could install several cards capable of doing MIDI if he needed lots of MIDI channels. Likewise, there can be more than one installed card capable of recording/playing digital audio data. For example, a musician could have an audio chip built into his motherboard, and also add another PCI audio card. 
+
+<P>ALSA allows a program to utilize all of the sound cards in a system, simultaneously. (ie, It is assumed that those sound cards are setup so that they can actually work simultaneously). ALSA maintains a list of all of the installed sound cards. The first sound card ALSA finds (whether that card supports MIDI, or digital audio, or both) is assigned a numeric ID of 0. The second sound card is assigned a numeric ID of 1. The third sound card is assigned a numeric ID of 2. Etc.
+
+<P>A given card is further divided up into logical "devices" (sort of like how your hard drive may be divided up into partitions. Your hard drive would be like the sound card itself. And each partition on that hard drive would be like each device upon a sound card).
+
+<P><FONT COLOR=RED>Note:</FONT> I believe it would be better to use the word "component" than "device", but the ALSA developers called them devices.
+
+<P>What do I mean by a device? Let's take an example for illustration: A Creative Labs' AWE32 sound card. This card has the following components:
+
+<OL><LI>An ADC that can record stereo (ie, 2 channel) Digital Audio.
+<P><LI>A DAC that can play stereo Digital Audio.
+<P><LI>A MIDI In port that can input MIDI data (from an external MIDI unit).
+<P><LI>A MIDI Out port that can output MIDI data (to an external MIDI unit).
+<P><LI>An FM Synth sound module that can play MIDI data.
+<P><LI>A Wavetable Synth sound module that can play MIDI data.</OL>
+
+<P>Note that all of the above components are contained upon that one sound card. But ALSA considers each one of them as a logical device. Therefore, ALSA would say that the above sound card has 6 devices on it. Actually, ALSA would probably say it has 4 devices. Often, ALSA groups matching input and output components together into one logical device. For example, the AWE32 has one digital audio playback component and one digital audio record component. One is an output, and the other is an input. And they both deal with stereo digital audio. So ALSA groups these two components into one device. (I wish that the developers didn't do this because it makes the API harder to understand, but it sort of does accomodate the limitations of Linux device drivers). Likewise, there is a MIDI output to external units, and a MIDI input from external units. So these two components may likewise be grouped into a single logical device.
+
+<P>ALSA usually does not group different components together. For example, ALSA would not group the digital audio output with the MIDI input. Also, ALSA may not group together more than one output, nor more than one input. For example, although the FM Synth and Wavetable Synth are similiar types of components, they are both essentially MIDI outputs, and therefore perhaps may not be grouped together into one device. (But you never know with ALSA).
+
+<P>So ALSA sees this card as containing four logical devices as so:
+
+<OL><LI>A 2 channel Digital Audio device that can input and output digital audio.
+<P><LI>A MIDI device that can input and output MIDI data (from/to an external MIDI unit).
+<P><LI>An FM Synth device to which you can output MIDI data.
+<P><LI>A Wavetable Synth device to which you can output MIDI data.</OL>
+
+<P>The first device that ALSA finds on a given card is assigned a numeric ID of 0. (That would be the digital audio input/output). The second device on that card is assigned an ID of 1. (That would be the MIDI input/output to external units). The third device is assigned an ID of 2. Etc.
+
+<P>When your application wants to "open" a particular device upon a particular card, you need to construct an ALSA "hardware name" for that card/device. This hardware name is a string that starts with "hw:", followed by the card number, a comma, and then the device number. For example, if you wanted to open the AWE32's digital audio device for playing or recording digital audio, you'd specify a hardware name of "hw:0,0". That means you want card 0 (ie, the AWE32), and its device 0 (ie, the digital audio device). If you wanted to access the wavetable synth, you'd specify a hardware name of "hw:0,3". Notice that we want card 0, device 3.
+
+<P>Now let's say that the motherboard also has a built-in sound chip with the following components:
+
+<OL><LI>An ADC that can record stereo Digital Audio via a "Line in" jack.
+<P><LI>A DAC that can play stereo Digital Audio via a "Speaker out" jack.
+<P><LI>An ADC that can record stereo Digital Audio via a "Mic in" jack.
+</OL>
+
+<P>Once again, ALSA will likely group the Line in and Speaker out components together, since one is an input and the other is an output, and both are similiar components. But notice that the Mic in is also a similiar component to the Speaker out. So ALSA will likely group both the Mic In and the Line In with the Speaker Out. What happens when more than one input is grouped together (or more than one output is grouped together, such as is typical with surround sound speaker outputs)? Welcome to the concept of a logical "sub-device". (Argh! I really wish ALSA had taken a clue from the Windows media API, and not done this grouping stuff. In Windows, every hardware component is its own software component. It really simplifies things from an app programmer's perspective). What happens is that ALSA gives the first sub-device (ie, Line in) a "sub-device ID number" of 0. The second sub-device (ie, Mic in) is given a sub-device ID number of 1. If there was a third sub-device, it would be 2. Etc.
+
+<P>So ALSA considers this card to have these logical devices:
+
+<OL><LI>A 2 channel Digital Audio device that has one output, and two inputs (ie, two sub-devices).
+</OL>
+
+<P>Since this is the second sound "card" that ALSA finds in this computer, it is assigned a numeric ID of 1. (ie, The AWE32 is card 0). The first device on this card is given a device ID number of 0. It doesn't matter that the AWE32 also has a device with an ID of 0. Whenever you refer to a device, you must <u>also</u> specify the card number. So there is no ambiguity here. The Line In has a sub-device of 0, and the Mic In has a sub-device of 1.
+
+<P>So if you wish to open the Speaker out upon this card, you specify a hardware name of "hw:1,0". (ie, Card 1, device 0). If you wish to open the Line in, you must further specify the sub-device number, which is simply appended to the end of the hardware name (after another comma). That would be "hw:1,0,0". (ie, Card 1, device 0, sub-device 0). If you want to open the Mic In, you specify a hardware name of "hw:1,0,1". (ie, Card 1, device 0, sub-device 1).
+
+<P><FONT COLOR=RED>Note:</FONT> When a sub-device is 0, you can omit it from the hardware name. For example, the Line in hardware name can be either "hw:1,0,0" or "hw:1,0". By default, ALSA assumes a subdevice number of 0, if you don't specify one where it otherwise could be specified.
+
+<P>So, to open the card's Line In, you specify "hw:1,0". To open the "Speaker out", you can also specify "hw:1,0". So how do you differentiate between opening the two? Usually ALSA's "open" function takes another arg that specifies the I/O direction. So, depending upon whether you tell ALSA to open "hw:1,0" for input (ie, Line in), or output (ie, Speaker out), determines whether you actually get a handle to Line In, or Speaker Out, respectively. And what if you want to access both Line In and Speaker out? Well, when opening digital audio devices, you can tell ALSA to open "hw:1,0" for <u>both</u> input and output, and use the resulting handle to both read (from Line in) and write (to Speaker out). With a bi-directional MIDI device, you have to get two handles -- one for input and one for output.
+
+<P>Unnecessarily convoluted and inconsistent, isn't it?
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA abstraction</B></FONT></P>
+
+<P>Let's assume we have the following C/C++ struct definition:
+
+<P><PRE><FONT COLOR=BLUE>struct</FONT> something {
+  <FONT COLOR=BLUE>char</FONT> *name;
+  <FONT COLOR=BLUE>int</FONT> id;
+};</PRE> 
+
+<P>You could declare an instance of this struct, and initialize its "name" and "id" fields as so:
+
+<P><PRE><FONT COLOR=BLUE>struct</FONT> something myStruct;
+
+myStruct.name = <FONT COLOR=RED>"some string"</FONT>;
+myStruct.id = 5;</PRE>
+
+<P>If you wanted to display the current value of the id and name fields, you could do:
+
+<P><PRE><FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"%i, %p"</FONT>, myStruct.id, myStruct.name);</PRE>
+
+<P>But ALSA refuses to let you directly access the fields of a lot of its structs. In fact, you can't even declare a global instance of one such struct.
+First, ALSA requires that you call some ALSA function to allocate the struct (either on the stack, or via malloc). ALSA will return a pointer to the newly allocated struct. Then, to set any one of its fields to a given value, you have to call another ALSA function to set that field, passing both the pointer to the struct, and the value for the field. ALSA does this "abstraction" so that, if the ALSA programmers decide to change the layout of the struct in a future ALSA version, then it won't break older software. (But, there are less annoying ways of accomodating future expansion than this amount of abstraction. Too bad ALSA developers didn't use one of those alternate ways).
+
+<P>So perhaps ALSA would have a snd_something_alloca() function you call to allocate a something struct on the stack. Typically, ALSA makes you pass a handle to where you want the returned pointer stored. Then you'd have a snd_something_set_name() function you'd call to set the name field. You'd also have a snd_something_set_id() function you'd call to set the id field. So here's how you'd code the above initialization:
+
+<P><PRE><FONT COLOR=BLUE>struct</FONT> something *myPointer;
+
+snd_something_alloca(&myPointer);
+snd_something_set_name(myPointer, <FONT COLOR=RED>"some string"</FONT>);
+snd_something_set_id(myPointer, 5);</PRE>
+
+<P>And of course, ALSA makes you call other functions to retrieve the current value of each field, for example maybe a snd_something_get_name() and snd_something_get_id() functions which return the value of the name, and id, fields respectively.
+
+<P><PRE><FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"%i, %p"</FONT>, snd_something_get_id(myPointer), snd_something_get_name(myPointer));</PRE>
+
+<P>Be prepared to deal with a lot of this sort of abstraction with ALSA.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA error codes</B></FONT></P>
+
+<P>Most ALSA functions, that could fail, will return an error code (ie, number). If this number is less than 0, this indicates an error. If 0 (or positive), then the function succeeded. If a negative number is returned, you can usually pass this to the ALSA function <B>snd_strerror</B>() to get an appropriate nul-terminated error message.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Enumerate ALSA sound cards</B></FONT></P>
+
+<P>One of the first things you'll likely need to do is to figure out what sound cards are installed on the computer. ALSA has some functions to enumerate all of the cards in the system. One such function is <B>snd_card_next</B>(). You pass it a pointer to an int. Before calling snd_card_next the first time, you initialize your int to -1. snd_card_next will then change the value of your int to be the number of the first card in the system (ie, typically 0). The next time you call snd_card_next, if your int's value is 0, then ALSA sets your int to the next card number after 0 (ie, typically 1). Etc. If there is not another sound card, then ALSA sets your int to -1. Here is a simple program (called countcards.c) to count how many sound cards ALSA has found in your computer:
+
+<PRE><FONT COLOR=#A0A0A0>// countcards.c
+// Counts how many sound cards ALSA finds in the system.
+//
+// Compile as:
+// gcc -o countcards countcards.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum, totalCards;
+
+   <FONT COLOR=#A0A0A0>// No cards found yet</FONT>
+   totalCards = 0;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Another card found, so bump the count</FONT>
+      ++totalCards;
+   }
+
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"ALSA found %i cards\n"</FONT>, totalCards);
+
+   <FONT COLOR=#A0A0A0>// ALSA allocates some mem to load its config file when we call
+   // snd_card_next. Now that we're done getting the info, let's tell ALSA
+   // to unload the info and free up that mem</FONT>
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<P>Obviously, you'd want to know a little more information about each sound card, for example, perhaps its name. In order to get information about a card, we must open the card's "control interface". We don't have to open any particular device on the card. So how do we open only the card itself? When we specify the hardware name, we omit any device (and sub-device) number. We specify only the card number, for example "hw:0" to open card 0. We open a card's control interface by calling <B>snd_ctl_open</B>(). This returns a handle we can then pass to <B>snd_ctl_card_info</B>() to get information on the card. snd_ctl_card_info() also wants us to pass a <B>snd_ctl_card_info_t</B> struct that ALSA fills in with info about the card. But as mentioned earlier, we can't simply declare one of these structs. We have to call an ALSA function to allocate one. And after this snd_ctl_card_info_t struct is filled in, we can't just access its name field. We have to call <B>snd_ctl_card_info_get_name</B>() to retrieve the name. Here is a program to list the names of all installed cards:
+
+<PRE><FONT COLOR=#A0A0A0>// cardnames.c
+// Lists the names of all ALSA sound cards in the system.
+//
+// Compile as:
+// gcc -o cardnames cardnames.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=BLUE>snd_ctl_t</FONT> *cardHandle;
+
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Open this card's control interface. We specify only the card number -- not
+      // any device nor sub-device too</FONT>
+      {
+      <FONT COLOR=BLUE>char</FONT>   str[64];
+
+      <FONT COLOR=PURPLE>sprintf</FONT>(str, <FONT COLOR=RED>"hw:%i"</FONT>, cardNum);
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_open</FONT>(&cardHandle, str, 0)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>continue</FONT>;
+      }
+      }
+
+      {
+      <FONT COLOR=BLUE>snd_ctl_card_info_t</FONT> *cardInfo;
+
+      <FONT COLOR=#A0A0A0>// We need to get a snd_ctl_card_info_t. Just alloc it on the stack</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_card_info_alloca</FONT>(&cardInfo);
+
+      <FONT COLOR=#A0A0A0>// Tell ALSA to fill in our snd_ctl_card_info_t with info about this card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_card_info</FONT>(cardHandle, cardInfo)) < 0)
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get info for card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+      <FONT COLOR=BLUE>else</FONT>
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Card %i = %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_ctl_card_info_get_name</FONT>(cardInfo));
+      }
+
+      <FONT COLOR=#A0A0A0>// Close the card's control interface after we're done with it</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_close</FONT>(cardHandle);
+   }
+
+   <FONT COLOR=#A0A0A0>// ALSA allocates some mem to load its config file when we call some of the
+   // above functions. Now that we're done getting the info, let's tell ALSA
+   // to unload the info and free up that mem</FONT>
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<P>At some point, you'll obviously want to know what devices (and perhaps sub-devices) are on each card. How you do that depends upon whether you want to know about MIDI, or digital audio, devices. (So too, it depends upon whether you want to know about inputs, or outputs). So the details of enumerating devices upon a card will be deferred to when we start talking about ALSA's MIDI and digital audio APIs specifically.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA MIDI</B></FONT></P>
+
+<P>ALSA has two methods for MIDI playback and recording. There is the <I>rawmidi</I> method, and the <I>sequencer</I> method. The rawmidi method is the most low level and simple. It deals with only raw midi bytes. The sequencer method is more high level and complex. The ALSA sequencer timestamps each incoming MIDI message, and also counts down the timing of outgoing MIDI messages, so that you don't have to do the timed playback yourself. The sequencer takes care of syncing to MIDI Time Code, or MIDI clocks, or even syncing to some digital audio clock. The sequencer method also allows the enduser to patch the MIDI I/O of applications together. For example, an enduser could take the MIDI output of your application and run it to the MIDI input of some other application that adds some "MIDI echo" to each note event. It is these extra features that can make it more difficult to use the sequencer method. So, if all you need to do is shove some MIDI bytes out of a MIDI output, without regard to timing (ie, you don't have to play back any sequenced track at some tempo), or read incoming bytes without need for them to be timestamped, then the rawmidi method is your best bet. If you need additional features, then you'll need to use the sequencer method.
+
+<P>So, let's begin with the rawmidi method. Here are two articles detailing that method:
+
+<P><A HREF="arawmidplay.htm">Play MIDI using ALSA rawmidi</A>
+<BR><A HREF="arawmidrec.htm">Record MIDI using ALSA rawmidi</A>
+
+<P>Here are two articles detailing the sequencer method:
+
+<P><A HREF="amidplay.htm">Play MIDI using ALSA sequencer</A>
+<BR><A HREF="amidrec.htm">Record MIDI using ALSA sequencer</A>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>ALSA digital audio</B></FONT></P>
+
+<P>Here are two articles detailing ALSA's digital audio API:
+
+<P><A HREF="aplay.htm">Play digital audio using ALSA</A>
+<BR><A HREF="arec.htm">Record digital audio using ALSA</A>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Example code</B></FONT></P>
+
+<P>You can <A HREF="linuxapi.tar.gz">download an archive</A> containing the text of this article (ie, linuxapi.htm) as well as various example programs that are referred to in this article.
+
+</BODY></HTML>

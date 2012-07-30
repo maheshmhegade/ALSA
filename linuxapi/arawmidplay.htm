@@ -1,0 +1,349 @@
+<HTML><HEAD><TITLE>ALSA rawmidi playback</TITLE></HEAD><BODY BGCOLOR=FFFFFF TEXT=000000 LINK=BLUE VLINK=PURPLE ALINK=PURPLE>
+
+ALSA's rawmidi API deals only with outputting MIDI bytes. It does no sequenced playback, nor routing of data between applications.
+
+<P>In order to write out MIDI data, you need to first call <B>snd_rawmidi_open</B>() once, passing it the hardware name of the desired card/device/sub-device. snd_rawmidi_open will return a handle you can use to call <B>snd_rawmidi_write</B>() which (immediately) outputs MIDI data to that device.
+
+<P>After you're done outputting to the device (and have no further use for it), you must close that device with <B>snd_rawmidi_close</B>().
+
+<P>Think of a MIDI device like a file. You open it, you write to it, and then you close it.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>List rawmidi outputs</B></FONT></P>
+
+<P>One of the first things you'll want to do is get a listing of rawmidi outputs. ALSA has some functions to do that. Unlike with Microsoft Windows API, you can't just quickly enumerate only MIDI output devices. No, that would be too easy, and Linux developers like to make things difficult. What you have to do is enumerate through <U>every</U> sound card on the system, whether or not it even has any MIDI capabilities at all, and query to find out if a given card has any MIDI output devices on it. Sigh.
+
+<P>So, we're going to need to do the same thing we did in the program cardnames.c (ie, go through every card in the system), but we'll add code to our loop to query each card for its MIDI output devices.
+
+<P>Just like we enumerated cards by calling <B>snd_card_next</B>() in a loop, we can enumerate the MIDI devices (input and output) on a given card by calling <B>snd_ctl_rawmidi_next_device</B>() in another (inner) loop. You pass snd_ctl_rawmidi_next_device the handle to the card's control interface (which as you'll recall from cardnames.c, we got by calling snd_ctl_open). You also pass a pointer to an int. Before calling snd_ctl_rawmidi_next_device the first time, you initialize your int to -1. snd_ctl_rawmidi_next_device will then change the value of your int to be the number of the first MIDI device on that card (perhaps 0). The next time you call snd_ctl_rawmidi_next_device, if your int's value is 0, then ALSA sets your int to the next MIDI device number after 0. Etc. If there is not another MIDI device upon that card, then ALSA sets your int to -1. Here is a simple program (called countmidi.c) to count how many MIDI devices are on each sound card ALSA has found in your computer:
+
+<PRE><FONT COLOR=#A0A0A0>// countmidi.c
+// Counts the number of MIDI devices upon each ALSA sound card in the system.
+//
+// Compile as:
+// gcc -o countmidi countmidi.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=BLUE>snd_ctl_t</FONT> *cardHandle;
+
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Open this card's control interface. We specify only the card number -- not
+      // any device nor sub-device too</FONT>
+      {
+      <FONT COLOR=BLUE>char</FONT>   str[64];
+
+      <FONT COLOR=PURPLE>sprintf</FONT>(str, <FONT COLOR=RED>"hw:%i"</FONT>, cardNum);
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_open</FONT>(&cardHandle, str, 0)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>continue</FONT>;
+      }
+      }
+
+      {
+      <FONT COLOR=BLUE>int</FONT>      devNum, totalDevices;
+
+      <FONT COLOR=#A0A0A0>// No MIDI devices found yet</FONT>
+      totalDevices = 0;
+
+      <FONT COLOR=#A0A0A0>// Start with the first MIDI device on this card</FONT>
+      devNum = -1;
+		
+      <FONT COLOR=BLUE>for</FONT> (;;)
+      {
+         <FONT COLOR=#A0A0A0>// Get the number of the next MIDI device on this card</FONT>
+         <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_rawmidi_next_device</FONT>(cardHandle, &devNum)) < 0)
+         {
+            <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get next MIDI device number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+            <FONT COLOR=BLUE>break</FONT>;
+         }
+
+         <FONT COLOR=#A0A0A0>// No more MIDI devices on this card? ALSA sets "devNum" to -1 if so.
+         // NOTE: It's possible that this sound card may have no MIDI devices on it
+         // at all, for example if it's only a digital audio card</FONT>
+         <FONT COLOR=BLUE>if</FONT> (devNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+         <FONT COLOR=#A0A0A0>// Another MIDI device found on this card, so bump the count</FONT>
+         ++totalDevices;
+      }
+
+      <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Found %i MIDI devices on card %i\n"</FONT>, totalDevices, cardNum);
+      }
+
+      <FONT COLOR=#A0A0A0>// Close the card's control interface after we're done with it</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_close</FONT>(cardHandle);
+   }
+
+   <FONT COLOR=#A0A0A0>// ALSA allocates some mem to load its config file when we call some of the
+   // above functions. Now that we're done getting the info, let's tell ALSA
+   // to unload the info and free up that mem</FONT>
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<P>But a card's MIDI device may have numerous sub-devices on it, which is often the case with multi-port MIDI interfaces.
+
+<P>To enumerate the rawmidi output sub-devices on a card, we must call <B>snd_ctl_rawmidi_info</B>(). snd_ctl_rawmidi_info wants us to pass the handle to the card's control interface. We also have to pass a <B>snd_rawmidi_info_t</B> struct. Once again, ALSA won't let us declare one of these. No, we have to call <B>snd_rawmidi_info_alloca</B>() to allocate one (from the stack). But, before we pass it to snd_ctl_rawmidi_info, we have to initialize this struct. We have to set the "device" field to the MIDI device number we want to fetch information about (where 0 will be the first MIDI device, 1 is the second MIDI device, etc). We must also set the "subdevice" field with the subdevice number (where -1 will fetch the first subdevice on that MIDI device). We also must set the "stream" field to SND_RAWMIDI_STREAM_OUTPUT if we want only the MIDI output sub-devices, or SND_RAWMIDI_STREAM_INPUT if we want only the MIDI input sub-devices. (Obviously, we'll set stream to SND_RAWMIDI_STREAM_OUTPUT here, since we're looking to output MIDI data).
+
+<P>But can we directly set the snd_rawmidi_info_t's device, subdevice, and stream fields? Oh hell no. That would be too easy. No, this is Linux, folks. We have to call snd_rawmidi_info_set_device to set the device field, snd_rawmidi_info_set_subdevice to set the subdevice field, and snd_rawmidi_info_set_stream to set the stream field.
+
+<P>snd_ctl_rawmidi_info() will then fill in the rest of our snd_rawmidi_info_t struct with information about one MIDI subdevice upon the device. So, then we can easily pull that info out of the snd_rawmidi_info_t? Well, not really. Remember that ALSA won't let us directly access the fields of the snd_rawmidi_info_t. So for example, if we want to examine the subdevices_count field to see how many MIDI subdevices there are on this particular MIDI device, we have to call <B>snd_rawmidi_info_get_subdevices_count</B>(). Anyone want to take bets that ALSA was written by folks who are into sado-masochism? There are so many ALSA functions that I haven't had time to look through them all, but I wouldn't be surprised if there was a snd_get_whip_and_dog_collar() function in there somewhere.
+
+<P><A NAME="ENUM">Here</A> is a program to list the hardware names of all the MIDI output devices/sub-devices on all the sound cards. Notice we added one more inner loop to enumerate MIDI out sub-devices. Oh, the pain of this API!
+
+<PRE><FONT COLOR=#A0A0A0>// listmidi.c
+// Lists the hardware names of MIDI output device/sub-devices
+// upon each ALSA sound card in the system.
+//
+// Compile as:
+// gcc -o listmidi listmidi.c -lasound</FONT>
+
+<FONT COLOR=BLUE>#include</FONT> &lt;stdio.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;string.h&gt;
+<FONT COLOR=BLUE>#include</FONT> &lt;alsa/asoundlib.h&gt;
+
+<FONT COLOR=BLUE>int</FONT> main(<FONT COLOR=BLUE>int</FONT> argc, <FONT COLOR=BLUE>char</FONT> **argv)
+{
+   <FONT COLOR=BLUE>register int</FONT>  err;
+   <FONT COLOR=BLUE>int</FONT>           cardNum;
+
+   <FONT COLOR=#A0A0A0>// Start with first card</FONT>
+   cardNum = -1;
+
+   <FONT COLOR=BLUE>for</FONT> (;;)
+   {
+      <FONT COLOR=BLUE>snd_ctl_t</FONT> *cardHandle;
+
+      <FONT COLOR=#A0A0A0>// Get next sound card's card number. When "cardNum" == -1, then ALSA
+      // fetches the first card</FONT>
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_card_next</FONT>(&cardNum)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get the next card number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>break</FONT>;
+      }
+
+      <FONT COLOR=#A0A0A0>// No more cards? ALSA sets "cardNum" to -1 if so</FONT>
+      <FONT COLOR=BLUE>if</FONT> (cardNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+      <FONT COLOR=#A0A0A0>// Open this card's control interface. We specify only the card number -- not
+      // any device nor sub-device too</FONT>
+      {
+      <FONT COLOR=BLUE>char</FONT>   str[64];
+
+      <FONT COLOR=PURPLE>sprintf</FONT>(str, <FONT COLOR=RED>"hw:%i"</FONT>, cardNum);
+      <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_open</FONT>(&cardHandle, str, 0)) < 0)
+      {
+         <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open card %i: %s\n"</FONT>, cardNum, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+         <FONT COLOR=BLUE>continue</FONT>;
+      }
+      }
+
+      {
+      <FONT COLOR=BLUE>int</FONT>      devNum;
+
+      <FONT COLOR=#A0A0A0>// Start with the first MIDI device on this card</FONT>
+      devNum = -1;
+		
+      <FONT COLOR=BLUE>for</FONT> (;;)
+      {
+         <FONT COLOR=BLUE>snd_rawmidi_info_t</FONT>  *rawMidiInfo;
+         <FONT COLOR=BLUE>register int</FONT>        subDevCount, i;
+
+         <FONT COLOR=#A0A0A0>// Get the number of the next MIDI device on this card</FONT>
+         <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_rawmidi_next_device</FONT>(cardHandle, &devNum)) < 0)
+         {
+            <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get next MIDI device number: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+            <FONT COLOR=BLUE>break</FONT>;
+         }
+
+         <FONT COLOR=#A0A0A0>// No more MIDI devices on this card? ALSA sets "devNum" to -1 if so.
+         // NOTE: It's possible that this sound card may have no MIDI devices on it
+         // at all, for example if it's only a digital audio card</FONT>
+         <FONT COLOR=BLUE>if</FONT> (devNum < 0) <FONT COLOR=BLUE>break</FONT>;
+
+         <FONT COLOR=#A0A0A0>// To get some info about the subdevices of this MIDI device (on the card), we need a
+         // snd_rawmidi_info_t, so let's allocate one on the stack</FONT>
+         <FONT COLOR=PURPLE>snd_rawmidi_info_alloca</FONT>(&rawMidiInfo);
+         <FONT COLOR=PURPLE>memset</FONT>(rawMidiInfo, 0, <FONT COLOR=PURPLE>snd_rawmidi_info_sizeof</FONT>());
+
+         <FONT COLOR=#A0A0A0>// Tell ALSA which device (number) we want info about</FONT>
+         <FONT COLOR=PURPLE>snd_rawmidi_info_set_device</FONT>(rawMidiInfo, devNum);
+
+         <FONT COLOR=#A0A0A0>// Get info on the MIDI outs of this device</FONT>
+         <FONT COLOR=PURPLE>snd_rawmidi_info_set_stream</FONT>(rawMidiInfo, SND_RAWMIDI_STREAM_OUTPUT);
+
+         i = -1;
+         subDevCount = 1;
+
+         <FONT COLOR=#A0A0A0>// More subdevices?</FONT>
+         <FONT COLOR=BLUE>while</FONT> (++i < subDevCount)
+         {
+            <FONT COLOR=#A0A0A0>// Tell ALSA to fill in our snd_rawmidi_info_t with info on this subdevice</FONT>
+            <FONT COLOR=PURPLE>snd_rawmidi_info_set_subdevice</FONT>(rawMidiInfo, i);
+            <FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_ctl_rawmidi_info</FONT>(cardHandle, rawMidiInfo)) < 0)
+            {
+               <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get info for MIDI output subdevice hw:%i,%i,%i: %s\n"</FONT>, cardNum, devNum, i, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+               <FONT COLOR=BLUE>continue</FONT>;
+            }
+
+            <FONT COLOR=#A0A0A0>// Print out how many subdevices (once only)</FONT>
+            <FONT COLOR=BLUE>if</FONT> (!i)
+            {
+               subDevCount = <FONT COLOR=PURPLE>snd_rawmidi_info_get_subdevices_count</FONT>(rawMidiInfo);
+               <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"\nFound %i MIDI output subdevices on card %i\n"</FONT>, subDevCount, cardNum);
+            }
+
+            <FONT COLOR=#A0A0A0>// NOTE: If there's only one subdevice, then the subdevice number is immaterial,
+            // and can be omitted when you specify the hardware name</FONT>
+            <FONT COLOR=PURPLE>printf</FONT>((subDevCount > 1 ? <FONT COLOR=RED>"    hw:%i,%i,%i\n"</FONT> : <FONT COLOR=RED>"    hw:%i,%i\n"</FONT>), cardNum, devNum, i);
+         }
+      }
+      }
+
+      <FONT COLOR=#A0A0A0>// Close the card's control interface after we're done with it</FONT>
+      <FONT COLOR=PURPLE>snd_ctl_close</FONT>(cardHandle);
+   }
+
+   <FONT COLOR=PURPLE>snd_config_update_free_global</FONT>();
+}</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Open an output</B></FONT></P>
+
+<P>Once you've discovered the hardware name of some MIDI output, you can pass this name to <B>snd_rawmidi_open</B>() (as the third arg) to open this MIDI output. You must also pass a handle to where you want ALSA to return the device handle. You pass this as the second arg.
+
+<P>For example, assuming that "hw:0,0,0" is the hardware name of a MIDI output, here's how we open it and get its handle in our variable <I>midiOutHandle</I>:
+
+<PRE><FONT COLOR=BLUE>snd_rawmidi_t</FONT> *midiOutHandle;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=#A0A0A0>// Open output MIDI device hw:0,0,0</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_open</FONT>(0, &midiOutHandle, <FONT COLOR=RED>"hw:0,0,0"</FONT>, 0)) < 0)
+{
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open MIDI output: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+}</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Output midi bytes</B></FONT></P>
+
+<P>After opening a MIDI output, you can send bytes to it by calling <B>snd_rawmidi_write</B>(). You pass the handle you got from snd_rawmidi_open, the address of a buffer containing some MIDI bytes, and a count of how many bytes are in the buffer. For example, here we send a MIDI note-on (on the first MIDI channel) for middle C (at a velocity of 100):
+
+<PRE><FONT COLOR=BLUE>unsigned char</FONT> buffer[3];
+
+<FONT COLOR=#A0A0A0>// Send a middle C note on the first MIDI channel, velocity of 100</FONT>
+buffer[0] = 0x90;
+buffer[1] = 60;
+buffer[2] = 100;
+<FONT COLOR=PURPLE>snd_rawmidi_write</FONT>(midiOutHandle, buffer, 3);</PRE>
+
+<P>If you desire, you can implement running status. For example, if we wanted to following the previous call with another call to snd_rawmidi_write to output another note-on on the same MIDI channel, we could omit the status byte:
+
+<PRE><FONT COLOR=#A0A0A0>// Send an E note on the same MIDI channel. Note: Only 2 bytes output</FONT>
+buffer[0] = 64;
+buffer[1] = 100;
+<FONT COLOR=PURPLE>snd_rawmidi_write</FONT>(midiOutHandle, buffer, 2);</PRE>
+
+<P>Note that a single call to snd_rawmidi_write could reference a buffer containing numerous MIDI messages, with running status too. For example, here we send both note-on messages in one buffer, with a single call to snd_rawmidi_write:
+
+<PRE><FONT COLOR=BLUE>unsigned char</FONT> buffer[5];
+
+<FONT COLOR=#A0A0A0>// Buffer contains 2 MIDI messages, total of 5 bytes using running status</FONT>
+buffer[0] = 0x90;
+buffer[1] = 60;
+buffer[2] = 100;
+buffer[3] = 64;
+buffer[4] = 100;
+<FONT COLOR=PURPLE>snd_rawmidi_write</FONT>(midiOutHandle, buffer, 5);</PRE>
+
+<P><FONT COLOR=RED>Note:</FONT> There may be a limit to how many bytes a single call to snd_rawmidi_write can handle (due to some driver internal buffer). If you exceed this limit, then snd_rawmidi_write may fail with an error code of -EAGAIN. You can determine what the driver's output buffer size is with a call to <B>snd_rawmidi_params_get_buffer_size</B>(), and even change that size if desired by calling <A NAME="RESIZE"><B>snd_rawmidi_params_set_buffer_size</B>().</A>
+
+<PRE><FONT COLOR=BLUE>snd_rawmidi_params_t</FONT> *params;
+<FONT COLOR=BLUE>register int</FONT> err;
+
+<FONT COLOR=#A0A0A0>// Allocate a snd_rawmidi_params_t from ALSA</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_params_malloc</FONT>(&params)))
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't get a snd_rawmidi_params_t: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+<FONT COLOR=BLUE>else</FONT>
+{
+   <FONT COLOR=#A0A0A0>// Tell ALSA to fill in our snd_rawmidi_params_t with this MIDI out's parameters</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_params_current</FONT>(midiOutHandle, params);
+
+   <FONT COLOR=#A0A0A0>// Display the driver's buffer size for this MIDI output</FONT>
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Buffer size = %i\n"</FONT>, <FONT COLOR=PURPLE>snd_rawmidi_params_get_buffer_size</FONT>(params));
+
+   <FONT COLOR=#A0A0A0>// Set the driver's buffer size to 10000 bytes. More fucking abstraction!</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_params_set_buffer_size</FONT>(midiOutHandle, params, 10000);
+   <FONT COLOR=PURPLE>snd_rawmidi_params</FONT>(midiOutHandle, params);
+
+   <FONT COLOR=#A0A0A0>// Free our snd_rawmidi_params_t</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_params_free</FONT>(params);
+}</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Close an output</B></FONT></P>
+
+<P>When you're finally done with an output (ie, no longer need to output any MIDI bytes to it), you pass the handle (you got from snd_rawmidi_open) to <B>snd_rawmidi_close</B>(). You need do this only once.
+
+<PRE><FONT COLOR=PURPLE>snd_rawmidi_close</FONT>(midiOutHandle);</PRE>
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Blocking and non-blocking modes</B></FONT></P>
+
+<P>Normally, a MIDI output is opened in blocking mode. What this means is that, when you pass some bytes to snd_rawmidi_write(), then snd_rawmidi_write will not return until all of the bytes are output.
+
+<P>But given that MIDI is a slow transmission protocol, it can take a long time to output some MIDI bytes. You can instead use non-blocking mode which means that snd_rawmidi_write quickly copies those bytes to some internal buffer in the driver, and then returns immediately. While your program goes on to do other things (even call snd_rawmidi_write to queue up more MIDI bytes for output), the driver will output those bytes for you.
+
+<P>To enable non-blocking mode, you can call <B>snd_rawmidi_nonblock</B> after you open the MIDI output. You pass the handle (you got from snd_rawmidi_open), and a 1 to enable non-blocking (or a 0 to disable it). 
+
+<PRE><FONT COLOR=#A0A0A0>// Enable non-blocking mode</FONT>
+<FONT COLOR=PURPLE>snd_rawmidi_nonblock</FONT>(midiOutHandle, 1);</PRE>
+
+<P>Alternately, you can enable non-blocking right when you open the MIDI output, by passing SND_RAWMIDI_NONBLOCK as the fourth arg to snd_rawmidi_open().
+
+<P><FONT COLOR=RED>Note:</FONT> Normally, if some other app is using the particular MIDI output you want, then snd_rawmidi_open will not return until the other app closes that MIDI output. So, your app may be "stuck" in that call to snd_rawmidi_open for a long time. But when you specify SND_RAWMIDI_NONBLOCK, then snd_rawmidi_open will return immediately with an error code of -EBUSY if some other app is using the MIDI output. So, SND_RAWMIDI_NONBLOCK can be useful if you don't want to be stuck in snd_rawmidi_open when the MIDI output is not available for your use. You can always call snd_rawmidi_nonblock to turn off non-blocking mode, after you open the output, if you don't desire blocking mode for snd_rawmidi_write.
+
+<PRE><FONT COLOR=#A0A0A0>// Open output MIDI device hw:0,0,0 in non-blocking mode</FONT>
+<FONT COLOR=BLUE>if</FONT> ((err = <FONT COLOR=PURPLE>snd_rawmidi_open</FONT>(0, &midiOutHandle, <FONT COLOR=RED>"hw:0,0,0"</FONT>, SND_RAWMIDI_NONBLOCK)) < 0)
+{
+   <FONT COLOR=#A0A0A0>// Is someone else using this MIDI output?</FONT>
+   <FONT COLOR=BLUE>if</FONT> (err == -EBUSY)
+   {
+      <FONT COLOR=#A0A0A0>// Here you may wish to try opening a different MIDI output</FONT>
+   }
+   <FONT COLOR=PURPLE>printf</FONT>(<FONT COLOR=RED>"Can't open MIDI output: %s\n"</FONT>, <FONT COLOR=PURPLE>snd_strerror</FONT>(err));
+}
+<FONT COLOR=#A0A0A0>// Here you may wish to turn off non-blocking mode</FONT>
+<FONT COLOR=BLUE>else</FONT>
+   <FONT COLOR=PURPLE>snd_rawmidi_nonblock</FONT>(midiOutHandle, 0);
+</PRE>
+
+<P>There is one thing to watch out for with non-blocking mode. When you call snd_rawmidi_close to close an output, then any MIDI bytes that haven't yet been output by the driver are thrown away. So if you call snd_rawmidi_write to output some bytes, and then quickly follow up with a call to snd_rawmidi_close before the driver has had a chance to output all those bytes, then some bytes may get "lost". The solution to this is to call <B>snd_rawmidi_drain</B>. This function will make your app wait until the driver has output all bytes, and then snd_rawmidi_drain returns when that has happened. In fact, you can call snd_rawmidi_drain at any time, when you want to ensure that all bytes have been output before you do something else. Of course, snd_rawmidi_drain is relevant only if you're using non-blocking mode.
+
+<PRE><FONT COLOR=PURPLE>snd_rawmidi_drain</FONT>(midiOutHandle);</PRE>
+
+<P><FONT COLOR=RED>Note:</FONT> If you throw too many bytes at snd_rawmidi_write, in non-blocking mode, such that you overflow the driver's buffer, snd_rawmidi_write will return the error code -EAGAIN. In this case, you should call snd_rawmidi_drain to wait for the buffer to empty. Alternately, you could loop around calls to <B>snd_rawmidi_status_get_avail</B> to see how many bytes are still in the output buffer. Then, when the count drops below the size of the output buffer, you can send as many bytes as will fill it back up. The advantage of the latter scheme is that you don't have to wait until the entire output buffer is emptied, before you output more bytes. You have to wait only until there is room for some more bytes. But, unless you want to eat up CPU cycles, you should probably wait for a millisecond inbetween every call to snd_rawmidi_status_get_avail. That should delay for enough time to give the sound card driver a chance to output at least 1 byte.
+
+<HR><P ALIGN="CENTER"><FONT COLOR="GREEN" SIZE="+2"><B>Examples</B></FONT></P>
+
+<P>The directory <B>rawmidi</B> contains some rawmidi examples. The subdirectory <B>listrawmidi</B> contains a program that lists all of the MIDI input and output devices/sub-devices on the system. It also display more detailed information about each device/sub-device.
+
+<P>The subdirectory <B>rawmidioutput</B> contains a program that plays a C major chord on a MIDI output. You can supply the hardware name of the MIDI output to use, or let the program use the first MIDI output it finds.
+
+</BODY></HTML>
