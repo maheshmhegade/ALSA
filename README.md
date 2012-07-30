@@ -1,4 +1,4 @@
 ALSA
 ====
 
-Advance Linux Sound Architecture
+Advanced Linux Sound Architecture
